@@ -5,8 +5,6 @@ import (
 	"flag"
 	"fmt"
 
-	"strings"
-
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -36,25 +34,6 @@ func validateCredentials(stsClient *sts.STS, profile string) (*sts.GetCallerIden
 		return resp, errors.New("Could not find valid credentials for profile: " + profile)
 	}
 	return resp, nil
-}
-
-// TODO test me
-func splitAndTrim(s string) []string {
-	split := strings.Split(s, ",")
-	for i, v := range split {
-		split[i] = strings.TrimSpace(v)
-	}
-	return split
-}
-
-// TODO test me
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }
 
 func bucketBlocksPublicAccess(s3Client *s3.S3, bucketName string) bool {
