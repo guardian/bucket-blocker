@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 
+	"strings"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -36,16 +38,56 @@ func validateCredentials(stsClient *sts.STS, profile string) (*sts.GetCallerIden
 	return resp, nil
 }
 
+// TODO test me
+func splitAndTrim(s string) []string {
+	split := strings.Split(s, ",")
+	for i, v := range split {
+		split[i] = strings.TrimSpace(v)
+	}
+	return split
+}
+
+// TODO test me
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+func bucketBlocksPublicAccess(s3Client *s3.S3, bucketName string) bool {
+	s3BucketPolicy, err := s3Client.GetPublicAccessBlock(&s3.GetPublicAccessBlockInput{
+		Bucket: aws.String(bucketName),
+	})
+	if err != nil {
+		fmt.Println("No public access ACL found for bucket: " + bucketName)
+		return false
+	}
+	return *s3BucketPolicy.PublicAccessBlockConfiguration.BlockPublicAcls
+}
+
+func bucketInRegion(s3Client *s3.S3, bucketName string, region string) bool {
+	location, err := s3Client.GetBucketLocation(&s3.GetBucketLocationInput{
+		Bucket: aws.String(bucketName),
+	})
+
+	if err != nil {
+		fmt.Println("Error getting bucket location for bucket: " + bucketName + " Error: " + err.Error())
+		return false
+	}
+	if location.LocationConstraint == nil {
+		return region == "us-east-1"
+	}
+	return *location.LocationConstraint == region
+}
+
 func main() {
-	name := flag.String("bucket", "", "The name of the bucket to block")
+	excludedBuckets := flag.String("buckets", "", "A comma separated list of bucket names to exclude from public access blocking")
 	profile := flag.String("profile", "", "The name of the profile to use")
 	region := flag.String("region", "", "The region of the bucket")
 	flag.Parse()
-
-	if *name == "" {
-		fmt.Println("Please provide a bucket name")
-		return
-	}
 
 	if *profile == "" {
 		fmt.Println("Please provide a profile name")
@@ -56,6 +98,8 @@ func main() {
 		fmt.Println("Please provide a region")
 		return
 	}
+
+	parsedBuckets := splitAndTrim(*excludedBuckets)
 
 	sess := session.Must(session.NewSessionWithOptions(session.Options{
 		SharedConfigState: session.SharedConfigEnable,
@@ -74,19 +118,32 @@ func main() {
 
 	s3Client := s3.New(sess)
 
-	//check bucket exists
-	_, err = s3Client.HeadBucket(&s3.HeadBucketInput{
-		Bucket: aws.String(*name),
-	})
+	buckets, err := s3Client.ListBuckets(&s3.ListBucketsInput{})
 	if err != nil {
-		fmt.Println("Unable to find bucket. Please make the bucket exists and you have the correct region set.")
+		fmt.Println("Error listing buckets: " + err.Error())
 		return
 	}
-	fmt.Println("Found bucket: " + *name + " in region: " + *region)
+	fmt.Println("Found " + fmt.Sprintf("%d", len(buckets.Buckets)) + " buckets in " + *profile)
 
-	_, err = blockPublicAccess(s3Client, *name)
-	if err != nil {
-		fmt.Println("Error blocking public access: " + err.Error())
-		return
+	var openRegionalBuckets s3.ListBucketsOutput
+	for _, bucket := range buckets.Buckets {
+		if bucketInRegion(s3Client, *bucket.Name, *region) && !bucketBlocksPublicAccess(s3Client, *bucket.Name) {
+			openRegionalBuckets.Buckets = append(openRegionalBuckets.Buckets, bucket)
+		}
+	}
+	fmt.Println("Found " + fmt.Sprintf("%d", len(openRegionalBuckets.Buckets)) + " buckets in " + *region + " that do not have a public access ACL")
+
+	for _, bucket := range openRegionalBuckets.Buckets[:10] {
+		if !contains(parsedBuckets, *bucket.Name) {
+			fmt.Println("Blocking public access for bucket: " + *bucket.Name)
+			// _, err = blockPublicAccess(s3Client, *bucket.Name)
+			// if err != nil {
+			// 	fmt.Println("Error blocking public access: " + err.Error())
+			// 	return
+			// }
+		} else {
+			fmt.Println("Skipping bucket: " + *bucket.Name)
+
+		}
 	}
 }
